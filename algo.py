@@ -6,7 +6,7 @@ class Trader:
     POSITION_LIMIT = 80
     FAIR_PRICE_OSMIUM = 10000
     BUY_PRICE_OSMIUM = 9998
-    SELL_PRICE_OSMIUM = 10010
+    SELL_PRICE_OSMIUM = 10004
 
     def bid(self):
         return 15
@@ -33,8 +33,9 @@ class Trader:
 
                 # Buy Algorithm
                 if len(order_depth.sell_orders) != 0:
-                    best_ask, best_ask_amount = list(order_depth.sell_orders.items())[0]
-                    available_to_buy = -best_ask_amount
+                    best_ask = min(order_depth.sell_orders.keys())
+                    best_ask_volume = order_depth.sell_orders[best_ask] 
+                    available_to_buy = -best_ask_volume
                     max_can_buy = self.POSITION_LIMIT - position
 
                     if int(best_ask) < self.BUY_PRICE_OSMIUM and max_can_buy > 0:
@@ -44,11 +45,12 @@ class Trader:
 
                 # Sell Algorithm
                 if len(order_depth.buy_orders) != 0:
-                    best_bid, best_bid_amount = list(order_depth.buy_orders.items())[0]
+                    best_bid = max(order_depth.buy_orders.keys())
+                    best_bid_volume = order_depth.buy_orders[best_bid]
                     max_can_sell = self.POSITION_LIMIT + position
 
                     if int(best_bid) > self.SELL_PRICE_OSMIUM and max_can_sell > 0:
-                        sell_qty = min(max_can_sell, best_bid_amount)
+                        sell_qty = min(max_can_sell, best_bid_volume)
                         print("SELL", str(sell_qty) + "x", best_bid)
                         orders.append(Order(product, best_bid, -sell_qty))
                 
