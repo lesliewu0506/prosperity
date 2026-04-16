@@ -16,7 +16,7 @@ class Trader:
         },
         "INTARIAN_PEPPER_ROOT": {
             "position_limit": 80,
-            "default_fair": 10000.0,
+            "default_fair": 12000.0,
             "ema_alpha": 0.10,
             "buy_edge": 2,
             "sell_edge": 6,
