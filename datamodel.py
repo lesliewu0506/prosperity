@@ -18,17 +18,6 @@ class Listing:
         self.product = product
         self.denomination = denomination
 
-
-class Observation:
-
-    def __init__(self, plainValueObservations: Dict[Product, ObservationValue], conversionObservations: Dict[Product, ConversionObservation]) -> None:
-        self.plainValueObservations = plainValueObservations
-        self.conversionObservations = conversionObservations
-        
-    def __str__(self) -> str:
-        return "(plainValueObservations: " + jsonpickle.encode(self.plainValueObservations) + ", conversionObservations: " + jsonpickle.encode(self.conversionObservations) + ")"
-     
-
 class Order:
 
     def __init__(self, symbol: Symbol, price: int, quantity: int) -> None:

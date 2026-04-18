@@ -3,122 +3,112 @@ from typing import List
 import json
 
 class Trader:
-    PARAMS = {
-        "ASH_COATED_OSMIUM": {
-            "position_limit": 80,
-            "default_fair": 10000.0,
-            "ema_alpha": 0.15,
-            "buy_edge": 1,
-            "sell_edge": 1,
-            "max_skew": 2,
-            "drift_per_timestamp": 0.0,
-            "allow_short": True,
-        },
-        "INTARIAN_PEPPER_ROOT": {
-            "position_limit": 80,
-            "default_fair": 13000.0,
-            "ema_alpha": 0.10,
-            "buy_edge": 2,
-            "sell_edge": 6,
-            "max_skew": 4,
-            "drift_per_timestamp": 0.0010,
-            "allow_short": True,
-        },
-    }
+
+    POSITION_LIMIT = 80
+
+    # Fair value model
+    DEFAULT_FAIR_VALUE = 10000.0
+    EMA_ALPHA = 0.15
+
+    # Trading edge around fair value
+    BASE_EDGE = 1
+
+    MAX_SKEW = 2
 
     def bid(self):
         return 15
-
+    
     def run(self, state: TradingState):
+        """Only method required. It takes all buy and sell orders for all
+        symbols as an input, and outputs a list of orders to be sent."""
+
         print("traderData: " + state.traderData)
         print("Observations: " + str(state.observations))
-
+        # Read previous fair value from traderData
         try:
             saved_data = json.loads(state.traderData) if state.traderData else {}
         except Exception:
             saved_data = {}
 
-        fair_values = saved_data.get("fair_values", {})
-        prev_timestamp = saved_data.get("timestamp", state.timestamp)
-
+        prev_fair_value = saved_data.get("fair_value", self.DEFAULT_FAIR_VALUE)
+        # Orders to be placed on exchange matching engine
         result = {}
-        new_fair_values = dict(fair_values)
-
-        dt = state.timestamp - prev_timestamp
-
         for product in state.order_depths:
             orders: List[Order] = []
+            if product != "ASH_COATED_OSMIUM":
+                order_depth: OrderDepth = state.order_depths[product]
+                position = state.position.get(product, 0)
 
-            if product not in self.PARAMS:
-                result[product] = []
-                continue
+                if position < self.POSITION_LIMIT and len(order_depth.sell_orders) > 0 and state.timestamp < 99000:
+                    best_ask = min(order_depth.sell_orders.keys())
+                    best_ask_volume = order_depth.sell_orders[best_ask] 
+                    available_to_buy = -best_ask_volume
+                    max_can_buy = self.POSITION_LIMIT - position
 
-            params = self.PARAMS[product]
-            order_depth: OrderDepth = state.order_depths[product]
-            position = state.position.get(product, 0)
-
-            best_bid = max(order_depth.buy_orders.keys()) if order_depth.buy_orders else None
-            best_ask = min(order_depth.sell_orders.keys()) if order_depth.sell_orders else None
-
-            prev_fair = fair_values.get(product, params["default_fair"])
-
-            # Mid price
-            if best_bid is not None and best_ask is not None:
-                mid_price = (best_bid + best_ask) / 2
-            elif best_bid is not None:
-                mid_price = float(best_bid)
-            elif best_ask is not None:
-                mid_price = float(best_ask)
-            else:
-                mid_price = prev_fair
-
-            # Drift-aware fair value
-            drifted_prev_fair = prev_fair + params["drift_per_timestamp"] * dt
-            fair_value = (
-                (1 - params["ema_alpha"]) * drifted_prev_fair
-                + params["ema_alpha"] * mid_price
-            )
-            new_fair_values[product] = fair_value
-
-            # Inventory skew
-            skew = round((position / params["position_limit"]) * params["max_skew"])
-
-            buy_threshold = fair_value - params["buy_edge"] - skew
-            sell_threshold = fair_value + params["sell_edge"] - skew
-
-            # BUY LOGIC
-            if best_ask is not None:
-                best_ask_volume = order_depth.sell_orders[best_ask] 
-                available_to_buy = -best_ask_volume
-                max_can_buy = params["position_limit"] - position
-
-                if best_ask < buy_threshold and max_can_buy > 0:
-                    buy_qty = min(max_can_buy, available_to_buy)
-                    if buy_qty > 0:
+                    if max_can_buy > 0:
+                        buy_qty = min(max_can_buy, available_to_buy)
                         print("BUY", str(buy_qty) + "x", best_ask)
                         orders.append(Order(product, best_ask, buy_qty))
-                        position += buy_qty
+    
+                if state.timestamp > 99000 and position > 0:
+                    # Sell all positions at the end of the trading day
+                    if len(order_depth.buy_orders) > 0:
+                        best_bid = max(order_depth.buy_orders.keys())
+                        best_bid_volume = order_depth.buy_orders[best_bid]
+                        max_can_sell = self.POSITION_LIMIT + position
 
-            # SELL LOGIC
-            if best_bid is not None:
-                best_bid_volume = order_depth.buy_orders[best_bid]
-
-                if params["allow_short"]:
-                    max_can_sell = params["position_limit"] + position
-                else:
-                    max_can_sell = max(position, 0) 
-
-                if best_bid > sell_threshold and max_can_sell > 0:
-                    sell_qty = min(max_can_sell, best_bid_volume)
-                    if sell_qty > 0:
+                        sell_qty = min(max_can_sell, best_bid_volume)
                         print("SELL", str(sell_qty) + "x", best_bid)
                         orders.append(Order(product, best_bid, -sell_qty))
 
-            result[product] = orders
+            else:
+                order_depth: OrderDepth = state.order_depths[product]
+                position = state.position.get(product, 0)
 
-        traderData = json.dumps({
-            "fair_values": new_fair_values,
-            "timestamp": state.timestamp
-        })
+                best_bid = (max(order_depth.buy_orders.keys()) if order_depth.buy_orders else None)
+                best_ask = (min(order_depth.sell_orders.keys()) if order_depth.sell_orders else None)
+
+                # Fair Value Calculation
+                if best_bid is not None and best_ask is not None:
+                    mid_price = (best_bid + best_ask) / 2
+                elif best_bid is not None:
+                    mid_price = float(best_bid)
+                elif best_ask is not None:
+                    mid_price = float(best_ask)
+                else:
+                    mid_price = prev_fair_value
+                
+                fair_value = (1 - self.EMA_ALPHA) * prev_fair_value + self.EMA_ALPHA * mid_price
+
+                # Inventory Skew Calculation
+                skew = round((position / self.POSITION_LIMIT) * self.MAX_SKEW)
+
+                buy_threshold = fair_value - self.BASE_EDGE - skew
+                sell_threshold = fair_value + self.BASE_EDGE - skew
+
+                # Buy Algorithm
+                if len(order_depth.sell_orders) != 0:
+                    best_ask_volume = order_depth.sell_orders[best_ask] 
+                    available_to_buy = -best_ask_volume
+                    max_can_buy = self.POSITION_LIMIT - position
+
+                    if best_ask < buy_threshold and max_can_buy > 0:
+                        buy_qty = min(max_can_buy, available_to_buy)
+                        print("BUY", str(buy_qty) + "x", best_ask)
+                        orders.append(Order(product, best_ask, buy_qty))
+
+                # Sell Algorithm
+                if len(order_depth.buy_orders) != 0:
+                    best_bid_volume = order_depth.buy_orders[best_bid]
+                    max_can_sell = self.POSITION_LIMIT + position
+
+                    if best_bid > sell_threshold and max_can_sell > 0:
+                        sell_qty = min(max_can_sell, best_bid_volume)
+                        print("SELL", str(sell_qty) + "x", best_bid)
+                        orders.append(Order(product, best_bid, -sell_qty))
+                
+            result[product] = orders
+    
+        traderData = ""  # No state needed - we check position directly
         conversions = 0
         return result, conversions, traderData
