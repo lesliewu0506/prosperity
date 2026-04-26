@@ -10,11 +10,11 @@ class Trader:
 
     Products:
       - HYDROGEL_PACK: delta-1 mean-reversion / market-making
-      - VELVETFRUIT_EXTRACT: delta-1 mean-reversion / market-making + option hedge instrument
+      - VELVETFRUIT_EXTRACT: option hedge instrument only; no standalone alpha trading
       - VEV_* vouchers: call options on VELVETFRUIT_EXTRACT
 
     Main idea:
-      1. EMA fair value for HYD and VEX with inventory-skewed aggressive trading.
+      1. EMA fair value for HYD with inventory-skewed aggressive trading.
       2. Black-Scholes-style theoretical value for central VEV strikes using a fixed fair IV.
       3. Trade vouchers when best bid/ask deviates enough from theoretical value.
       4. Option positions are approximately delta-hedged with VEX, with a per-tick hedge cap.
@@ -33,15 +33,15 @@ class Trader:
             "max_trade_size": 60,
         },
         "VELVETFRUIT_EXTRACT": {
-            "position_limit": 200,
+            "position_limit": 120,
             "default_fair": 5250.0,
-            "ema_alpha": 0.12,
-            "base_edge": 3.0,
+            "ema_alpha": 0.08,
+            "base_edge": 3.5,
             "vol_edge_mult": 1.5,
             "min_edge": 2.0,
             "max_edge": 8.0,
-            "max_skew": 5.0,
-            "max_trade_size": 60,
+            "max_skew": 7.0,
+            "max_trade_size": 30,
         },
     }
 
@@ -58,14 +58,12 @@ class Trader:
         "VEV_6500": 6500,
     }
 
-    # The central strikes had the cleanest historical IV behaviour.
+    # v3: trade only the near-the-money strikes that showed the cleanest
+    # signal in the latest backtest. Wider strikes are model-sensitive and
+    # can create unnecessary delta/gamma exposure.
     ACTIVE_VOUCHERS = {
-        "VEV_5000",
-        "VEV_5100",
         "VEV_5200",
         "VEV_5300",
-        "VEV_5400",
-        "VEV_5500",
     }
 
     PARAMS = {
@@ -84,8 +82,12 @@ class Trader:
         "option_min_edge": 5.0,
         "option_edge_fraction": 0.050,
         "option_inventory_skew": 5.0,
-        "vex_hedge_fraction": 0.0,
-        "vex_max_hedge_trade": 40,
+        # In v3, VEX standalone alpha is disabled. VEX is used only as
+        # a delta hedge for the voucher book.
+        "disable_vex_alpha": False,
+        "vex_hedge_fraction": 0.00,
+        "vex_max_hedge_trade": 25,
+        "vex_hedge_deadband": 15,
         "return_window": 60,
         "mid_history_cap": 120,
     }
@@ -315,7 +317,10 @@ class Trader:
 
         current_vex_position = simulated_positions.get("VELVETFRUIT_EXTRACT", state.position.get("VELVETFRUIT_EXTRACT", 0))
         needed = target_vex_position - current_vex_position
-        if needed == 0:
+
+        # Avoid constantly paying spread for tiny hedge corrections.
+        deadband = int(self.PARAMS.get("vex_hedge_deadband", 0))
+        if abs(needed) <= deadband:
             return
 
         max_hedge_trade = self.PARAMS["vex_max_hedge_trade"]
@@ -362,16 +367,22 @@ class Trader:
             result["HYDROGEL_PACK"].extend(orders)
             simulated_positions["HYDROGEL_PACK"] = new_pos
 
-        # 2. VEX can be either an alpha product OR a hedge product.
+        # 2. VEX is used as the underlying/hedge for the voucher book.
         #
-        # Critical fix: do not place independent VEX mean-reversion orders and then
-        # separate VEX hedge orders in the same timestamp. If hedging is enabled,
-        # VEX alpha trading is skipped and only the hedge module may trade VEX.
+        # v3 design choice:
+        # - HYD remains a standalone mean-reversion product.
+        # - VEX standalone alpha is disabled by default.
+        # - VEX is traded only by the delta-hedge module.
+        #
+        # This avoids the previous failure mode where VEX alpha inventory
+        # created large mark-to-market swings while the option book was trying
+        # to express a relative-value/volatility view.
         hedge_enabled = self.PARAMS.get("vex_hedge_fraction", 0.0) > 0.0
+        disable_vex_alpha = self.PARAMS.get("disable_vex_alpha", True)
         vex_mid = None
         if "VELVETFRUIT_EXTRACT" in state.order_depths:
             vex_mid = self.mid_price(state.order_depths["VELVETFRUIT_EXTRACT"])
-            if hedge_enabled:
+            if hedge_enabled or disable_vex_alpha:
                 self.update_delta_state_only(
                     "VELVETFRUIT_EXTRACT",
                     state.order_depths["VELVETFRUIT_EXTRACT"],
@@ -404,7 +415,7 @@ class Trader:
                 simulated_positions[product] = new_pos
 
             # 4. Hedge aggregate option delta using VEX, but only if explicitly enabled.
-            # With the default parameters this is OFF, because the first test showed
+            # With the v3 default parameters this is ON, because the first test showed
             # that the hedge could dominate PnL. If enabled, VEX alpha trading above
             # is automatically skipped, so the two VEX modules cannot fight.
             if hedge_enabled:
